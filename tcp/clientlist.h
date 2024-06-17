@@ -5,9 +5,9 @@
 // 定义链表的节点
 struct ClientInfo
 {
-    int      fd;
-    int      count;
-    pthrad_t pid;
+    int       fd;
+    int       count;
+    pthread_t pid;
     struct ClientInfo* next;
 };
 

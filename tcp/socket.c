@@ -83,6 +83,7 @@ int readn(int fd, char* buffer, int size)
     int left = size;
     int readBytes = 0;
     char* ptr = buffer;
+
     while (left)
     {
         readBytes = read(fd, ptr, left);
@@ -92,15 +93,15 @@ int readn(int fd, char* buffer, int size)
             {
                 readBytes = 0;
             } else {
-                peeror("read");
+                perror("read error");
                 return -1;
             }
         } else if (readBytes == 0) {
             printf("对方主动断开了连接...\n");
             return -1;
         }
-        left = left - readBytes;
-        ptr  = ptr  + readBytes;
+        left -= readBytes;
+        ptr  += readBytes;
     }
     return size - left;
 }
@@ -109,12 +110,12 @@ int writen(int fd, const char* buffer, int length)
 {
     int left = length;
     int writeBytes = 0;
-    const char ptr = buffer;
+    const char* ptr = buffer;
 
     while(left)
     {
         writeBytes = write(fd, ptr, left);
-        if (writeBytes < = 0){
+        if (writeBytes <= 0){
             if (errno == EINTR)
             {
                 writeBytes = 0;
@@ -123,8 +124,8 @@ int writen(int fd, const char* buffer, int length)
                 return -1;
             }
         }
-        ptr  = ptr  + writeBytes;
-        left = left - writeBytes;  
+        ptr  += writeBytes;
+        left -= writeBytes;  
     }
     return length;
 }
@@ -162,7 +163,7 @@ int recvMessage(int fd, char** buffer, enum Type* t)
 bool sendMessage(int fd, const char* buffer, int length, enum Type t)
 {
     int dataLen = length + 1 + sizeof(int);
-    char* data = (char*)malloc(datalen);
+    char* data = (char*)malloc(dataLen);
     if (data == NULL)
     {
         return false;

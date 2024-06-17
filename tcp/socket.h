@@ -23,6 +23,6 @@ int readn(int fd, char* buffer, int sise);
 // 写入指定字节数
 int writen(int fd, const char* buffer, int length);
 // 发送数据
-int sendMessage(int fd, const char* buffer, int length, enum Type t);
+bool sendMessage(int fd, const char* buffer, int length, enum Type t);
 // 接收数据
 int recvMessage(int fd, char** buffer, enum Type* t);
