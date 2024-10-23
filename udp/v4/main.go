@@ -1,4 +1,4 @@
-package v3
+package v4
 
 import (
 	"fmt"
@@ -28,6 +28,7 @@ func startServer() {
 	var (
 		lastAck     int
 		seqList     = [][2]int{}
+		seqRecord   = [][2]int{}
 		lastAckTime = time.Now()
 		clientAddr  *net.UDPAddr
 	)

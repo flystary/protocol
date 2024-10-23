@@ -1,4 +1,4 @@
-package v3
+package v4
 
 import (
 	"fmt"
@@ -15,11 +15,12 @@ const (
 )
 
 type Packet struct {
-	Seq  int      // 序列号
-	Ack  int      // 确认号
-	SAck string   // SAck 区间
-	Data string   // 数据内容
-	Flag FlagType //标志位
+	Seq        int      // 序列号
+	Ack        int      // 确认号
+	SAck       string   // SAck 区间
+	Data       string   // 数据内容
+	Flag       FlagType // 标志位
+	Retransmit bool     // 重传标志位
 }
 
 func encode(p *Packet) []byte {
