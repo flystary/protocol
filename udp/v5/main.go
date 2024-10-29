@@ -61,6 +61,31 @@ func startServer() {
 				lastAck = seqList[0][1]
 				lastAckChanged := false
 
+				for i, j := 1, len(seqList)-1; i < j; i, j = i+1, j-1 {
+					seqList[i], seqList[j] = seqList[j], seqList[i]
+				}
+
+				for _, val := range seqList {
+					if val[0] > lastAck {
+						ackPacket := Packet{
+							Seq:  1,
+							Ack:  lastAck,
+							SAck: "",
+							Data: "",
+							Flag: FlagTypeDupAck,
+						}
+						ackData := encode(&ackPacket)
+						conn.WriteToUDP(ackData, clientAddr)
+					} else {
+						lastAck = val[1]
+					}
+				}
+
+				// 排序合并后的区间
+				sort.Slice(seqList, func(i, j int) bool {
+					return seqList[i][0] < seqList[j][0] && seqList[i][1] < seqList[j][1]
+				})
+
 				// 因为丢包，可能存在多个区间 Ack 确认包
 				// 所以需要分开单独发送
 				// 根据 Seq 合并区间
@@ -219,6 +244,9 @@ func startClient() {
 				receivedAckList := [][2]int{}
 				for _, val := range receivedPackets {
 					ackBlock := strings.Split(val.SAck, "-")
+					if len(ackBlock) < 2 {
+						continue
+					}
 					start, _ := strconv.ParseInt(ackBlock[0], 10, 64)
 					end, _ := strconv.ParseInt(ackBlock[1], 10, 64)
 					receivedAckList = append(receivedAckList, [2]int{

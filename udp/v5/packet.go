@@ -12,6 +12,7 @@ const (
 	FlagTypeInvalid FlagType = iota
 	FlagTypeData             // 数据包
 	FlagTypeAck              // 确认包
+	FlagTypeDupAck           // 快速重传包
 )
 
 type Packet struct {
@@ -52,6 +53,8 @@ func serialization(p *Packet) string {
 		}
 	} else if p.Flag == FlagTypeAck {
 		sb.WriteString("[ACK]")
+	} else if p.Flag == FlagTypeDupAck {
+		sb.WriteString("[TCP Dup ACK]")
 	} else {
 		sb.WriteString("[Unknown]")
 	}
@@ -59,7 +62,7 @@ func serialization(p *Packet) string {
 	sb.WriteString(" Seq=")
 	sb.WriteString(strconv.Itoa(p.Seq))
 
-	if p.Flag == FlagTypeAck {
+	if p.Flag == FlagTypeAck || p.Flag == FlagTypeDupAck {
 		sb.WriteString(" Ack=")
 		sb.WriteString(strconv.Itoa(p.Ack))
 
