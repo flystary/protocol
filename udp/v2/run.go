@@ -2,6 +2,7 @@ package v2
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -26,7 +27,7 @@ func startServer() {
 	const ackDelay = 200 * time.Millisecond
 
 	var (
-		lastAck     int
+		lastAck     int32
 		lastAckTime = time.Now()
 		clientAddr  *net.UDPAddr
 	)
@@ -35,13 +36,17 @@ func startServer() {
 		for {
 			if time.Since(lastAckTime) >= ackDelay {
 				ackPacket := Packet{
-					Seq:  1,
-					Ack:  lastAck,
-					Data: "",
-					Flag: FlagTypeAck,
+					Header: Header{
+						Seq:  1,
+						Ack:  lastAck,
+						Flag: FlagTypeAck,
+					},
+					Data: nil,
 				}
-				ackData := encode(&ackPacket)
-				conn.WriteToUDP(ackData, clientAddr)
+				ackData := ackPacket.Encode()
+				if _, err := conn.WriteToUDP(ackData, clientAddr); err != nil {
+					log.Printf("Error sending ACK: %v\n", err)
+				}
 				lastAckTime = time.Now()
 			}
 			time.Sleep(100 * time.Millisecond)
@@ -54,11 +59,14 @@ func startServer() {
 			fmt.Println("Error reading:", err)
 			continue
 		}
+		recvPacket, err := Decode(buffer[:])
+		if err != nil {
+			fmt.Println("Error decodeing:", err)
+			continue
+		}
+		fmt.Printf("client -> server %s\n", (recvPacket.String()))
 
-		recvPacket := decode(buffer[:])
-		fmt.Printf("client -> server %s\n", serialization(&recvPacket))
-
-		lastAck = recvPacket.Seq + len(recvPacket.Data)
+		lastAck = recvPacket.Header.Seq + int32(len(recvPacket.Data))
 	}
 }
 
@@ -71,10 +79,12 @@ func startClient() {
 	defer conn.Close()
 
 	packet := Packet{
-		Seq:  1,
-		Ack:  1,
-		Data: "Hello Server",
-		Flag: FlagTypeData,
+		Header: Header{
+			Seq:  1,
+			Ack:  1,
+			Flag: FlagTypeData,
+		},
+		Data: []byte("Hello Server"),
 	}
 
 	var wg sync.WaitGroup
@@ -90,17 +100,19 @@ func startClient() {
 			return
 		}
 
-		recvAckPacket := decode(buffer[:])
-		fmt.Printf("server -> client %s\n", serialization(&recvAckPacket))
-
+		recvAckPacket, err := Decode(buffer[:])
+		if err != nil {
+			fmt.Println("Error decodeing:", err)
+		}
+		fmt.Printf("server -> client %s\n", recvAckPacket.String())
 	}()
 
 	for i := 0; i < 5; i++ {
-		data := encode(&packet)
+		data := packet.Encode()
 		conn.Write(data)
 
 		// 更新下次发送数据包的 Seq 值
-		packet.Seq += len(packet.Data)
+		packet.Header.Seq += int32(len(packet.Data))
 	}
 	wg.Wait()
 }

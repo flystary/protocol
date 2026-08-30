@@ -26,8 +26,8 @@ func startServer() {
 	const ackDelay = 200 * time.Millisecond
 
 	var (
-		lastAck     int
-		seqList     = [][2]int{}
+		lastAck     int32
+		seqList     = [][2]int32{}
 		lastAckTime = time.Now()
 		clientAddr  *net.UDPAddr
 	)
@@ -39,7 +39,7 @@ func startServer() {
 				lastAck = seqList[0][1]
 				lastAckChange := false
 
-				mergedSeqList := [][2]int{
+				mergedSeqList := [][2]int32{
 					seqList[0],
 				}
 				for i := 1; i < len(seqList); i++ {
@@ -57,13 +57,15 @@ func startServer() {
 
 				for _, seq := range mergedSeqList {
 					ackPacket := Packet{
-						Seq:  1,
-						Ack:  lastAck,
-						SAck: fmt.Sprintf("%d-%d", seq[0], seq[1]),
-						Data: "",
-						Flag: FlagTypeAck,
+						Header: Header{
+							Seq:  1,
+							Ack:  lastAck,
+							SAck: append([][2]int32{}, seq),
+							Flag: FlagTypeAck,
+						},
+						Data: nil,
 					}
-					ackData := encode(&ackPacket)
+					ackData := ackPacket.Encode()
 					conn.WriteToUDP(ackData, clientAddr)
 				}
 				lastAckTime = time.Now()
@@ -80,13 +82,13 @@ func startServer() {
 			continue
 		}
 
-		recvPacket := decode(buffer[:])
-		fmt.Printf("client -> server %s\n", serialization(&recvPacket))
+		recvPacket, err := Decode(buffer[:])
+		fmt.Printf("client -> server %s\n", recvPacket.String())
 
 		// lastAck = recvPacket.Seq + len(recvPacket.Data)
-		seqList = append(seqList, [2]int{
-			recvPacket.Seq,
-			recvPacket.Seq + len(recvPacket.Data),
+		seqList = append(seqList, [2]int32{
+			recvPacket.Header.Seq,
+			recvPacket.Header.Seq + int32(len(recvPacket.Data)),
 		})
 	}
 }
@@ -119,25 +121,27 @@ func startClient() {
 					continue
 				}
 
-				recvAckPacket := decode(buffer[:])
-				fmt.Printf("server -> client %s\n", serialization(&recvAckPacket))
+				recvAckPacket, err := Decode(buffer[:])
+				fmt.Printf("server -> client %s\n", recvAckPacket.String())
 			}
 		}
 	}()
 
 	packet := Packet{
-		Seq:  1,
-		Ack:  1,
-		Data: "Hello Server",
-		Flag: FlagTypeData,
+		Header: Header{
+			Seq:  1,
+			Ack:  1,
+			Flag: FlagTypeData,
+		},
+		Data: []byte("Hello Server"),
 	}
 
 	for i := 0; i < 5; i++ {
 		if i != 3 {
-			data := encode(&packet)
+			data := packet.Encode()
 			conn.Write(data)
 		}
-		packet.Seq += len(packet.Data)
+		packet.Header.Seq += int32(len(packet.Data))
 	}
 	// 更新下次发送数据包的 Seq 值
 
