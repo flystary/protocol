@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"net"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -25,22 +23,22 @@ func startServer() {
 	}
 	defer conn.Close()
 
-	buffer := make([]byte, 32)
+	buffer := make([]byte, 1024)
 
 	// 延迟 200 毫秒发送 ACK
 	const ackDelay = 200 * time.Millisecond
 
 	var (
 		// 延迟 Ack
-		lastAck int
+		lastAck int32
 
 		// 记录接收到的区间 Seq
 		// [0]: 区间起始 Seq
 		// [1]: 区间结束 Seq, Seq + Data.Len()
-		seqList = [][2]int{}
+		seqList = [][2]int32{}
 
 		// 记录历史接收到的所有区间 Seq
-		seqRecord = [][2]int{}
+		seqRecord = [][2]int32{}
 
 		// 最后发送 Ack 报文的时间
 		lastAckTime = time.Now()
@@ -53,100 +51,110 @@ func startServer() {
 	// 来完成延迟 Ack 操作
 	go func() {
 		for {
-			// 超过延迟时间，发送 Ack 确认包
-			if time.Since(lastAckTime) >= ackDelay && len(seqList) > 0 {
-				// 超过延迟时间，发送 Ack 确认包
-				// 构造 Ack 包并发送
-
-				lastAck = seqList[0][1]
-				lastAckChanged := false
-
-				// 因为丢包，可能存在多个区间 Ack 确认包
-				// 所以需要分开单独发送
-				// 根据 Seq 合并区间
-				mergedSeqList := [][2]int{
-					seqList[0],
-				}
-
-				for i := 1; i < len(seqList); i++ {
-					// 数据包 Seq 是连续的，直接合并两个区间
-					if seqList[i][0] == mergedSeqList[len(mergedSeqList)-1][1] {
-						mergedSeqList[len(mergedSeqList)-1][1] = seqList[i][1]
-
-						// 更新最后接收到的确认号
-						if !lastAckChanged {
-							lastAck = mergedSeqList[len(mergedSeqList)-1][1]
-						}
-					} else {
-						lastAckChanged = true
-
-						// 数据包 Seq 不是连续的，有中间数据包还未收到
-						mergedSeqList = append(mergedSeqList, seqList[i])
-					}
-				}
-
-				for _, seq := range mergedSeqList {
-					ackPacket := Packet{
-						// 因为这个示例中
-						// 服务端不主动发送数据
-						// 所以 Seq 固定为 1
-						Seq:  1,
-						Ack:  lastAck,
-						SAck: fmt.Sprintf("%d-%d", seq[0], seq[1]),
-						Data: "",
-						Flag: FlagTypeAck,
-					}
-
-					ackData := encode(&ackPacket)
-					conn.WriteToUDP(ackData, clientAddr)
-				}
-
-				// 更新最后发送 Ack 的时间
-				lastAckTime = time.Now()
-
-				// 重置区间 Seq
-				seqList = seqList[:0]
-			}
-
 			// 短暂休眠，避免占用过多 CPU 资源
 			time.Sleep(100 * time.Millisecond)
+
+			// 未拿到客户端地址或列表为空
+			if clientAddr == nil || len(seqList) == 0 {
+				continue
+			}
+			// 延迟时间未到
+			if time.Since(lastAckTime) < ackDelay {
+				continue
+			}
+
+			lastAck = seqList[0][1]
+			lastAckChanged := false
+
+			mergedSeqList := [][2]int32{
+				seqList[0],
+			}
+
+			for i := 1; i < len(seqList); i++ {
+				// 数据包 Seq 是连续的，直接合并两个区间
+				if seqList[i][0] == mergedSeqList[len(mergedSeqList)-1][1] {
+					mergedSeqList[len(mergedSeqList)-1][1] = seqList[i][1]
+
+					// 更新最后接收到的确认号
+					if !lastAckChanged {
+						lastAck = mergedSeqList[len(mergedSeqList)-1][1]
+					}
+				} else {
+					lastAckChanged = true
+					// 数据包 Seq 不是连续的，有中间数据包还未收到
+					mergedSeqList = append(mergedSeqList, seqList[i])
+				}
+			}
+
+			for _, seq := range mergedSeqList {
+				sackList := [][2]int32{seq}
+				ackPacket := Packet{
+					Header: Header{
+						Seq:       1,
+						Ack:       lastAck,
+						Flag:      FlagTypeAck,
+						SAckCount: uint8(len(sackList)),
+					},
+					SAck: sackList,
+					Data: nil,
+				}
+
+				ackData := ackPacket.Encode()
+				conn.WriteToUDP(ackData, clientAddr)
+			}
+
+			// 更新最后发送 Ack 的时间
+			lastAckTime = time.Now()
+
+			// 重置区间 Seq
+			seqList = seqList[:0]
 		}
 	}()
 
 	for {
-		_, clientAddr, err = conn.ReadFromUDP(buffer)
+		n, clientAddr, err := conn.ReadFromUDP(buffer)
 		if err != nil {
 			fmt.Println("Error reading:", err)
 			continue
 		}
 
 		// 解析接收到的数据包
-		recvPacket := decode(buffer[:])
+		recvPacket, err := Decode(buffer[:n])
+		if err != nil {
+			fmt.Println("Error decoding:", err)
+			continue
+		}
 
-		fmt.Printf("client -> server %s\n", serialization(&recvPacket))
+		fmt.Printf("client -> server %s\n", recvPacket.String())
 
 		// 记录历史区间 Seq
-		seqRecord = append(seqRecord, [2]int{
-			recvPacket.Seq,
-			recvPacket.Seq + len(recvPacket.Data),
+		seqRecord = append(seqRecord, [2]int32{
+			recvPacket.Header.Seq,
+			recvPacket.Header.Seq + int32(len(recvPacket.Data)),
 		})
 
 		// 这里假设重传的数据包 100% 接收成功
 		// 服务端直接返回确认 Ack 报文
 		// 简化对重传数据包的再次 Ack 的实现机制
-		if recvPacket.Retransmit {
+		if recvPacket.Header.Retransmit {
 			// 排序合并后的区间
 			sort.Slice(seqRecord, func(i, j int) bool {
-				return seqRecord[i][0] < seqRecord[j][0] && seqRecord[i][1] < seqRecord[j][1]
+				if seqRecord[i][0] != seqRecord[j][0] {
+					return seqRecord[i][0] < seqRecord[j][0]
+				}
+				return seqRecord[i][1] < seqRecord[j][1]
 			})
-			// 合并重复区间
+
 			// 合并重复区间
 			uniqueIndex := 0
 			for i := 1; i < len(seqRecord); i++ {
-				if seqRecord[i][0] == seqRecord[uniqueIndex][1] {
-					seqRecord[uniqueIndex][1] = seqRecord[i][1]
+				if seqRecord[i][0] <= seqRecord[uniqueIndex][1] {
+					if seqRecord[i][1] > seqRecord[uniqueIndex][1] {
+						seqRecord[uniqueIndex][1] = seqRecord[i][1]
+					}
 				} else {
 					uniqueIndex++
+					seqRecord[uniqueIndex] = seqRecord[i]
 				}
 			}
 			seqRecord = seqRecord[:uniqueIndex+1]
@@ -154,23 +162,30 @@ func startServer() {
 			// 更新已经接收到连续区间最大 Ack
 			lastAck = seqRecord[0][1]
 
-			recvPacket.SAck = fmt.Sprintf("%d-%d", recvPacket.Seq, recvPacket.Seq+len(recvPacket.Data))
-			recvPacket.Ack = lastAck
+			ackRange := [2]int32{recvPacket.Header.Seq, recvPacket.Header.Seq + int32(len(recvPacket.Data))}
 
-			recvPacket.Seq = 1
-			recvPacket.Flag = FlagTypeAck
-			conn.WriteToUDP(encode(&recvPacket), clientAddr)
+			ackPacket := Packet{
+				Header: Header{
+					Seq:        1,
+					Ack:        lastAck,
+					Flag:       FlagTypeAck,
+					SAckCount:  1,
+					Retransmit: true,
+				},
+				SAck: [][2]int32{ackRange},
+				Data: nil,
+			}
+			conn.WriteToUDP(ackPacket.Encode(), clientAddr)
 			continue
 		}
-
-		// 记录接收到的区间 Seq
-		seqList = append(seqList, [2]int{
-			recvPacket.Seq,
-			recvPacket.Seq + len(recvPacket.Data),
+		// 记录常规接收到的区间 Seq
+		seqList = append(seqList, [2]int32{
+			recvPacket.Header.Seq,
+			recvPacket.Header.Seq + int32(len(recvPacket.Data)),
 		})
 	}
-}
 
+}
 func startClient() {
 	conn, err := net.DialUDP("udp", nil, &serverAddr)
 	if err != nil {
@@ -179,26 +194,18 @@ func startClient() {
 	}
 	defer conn.Close()
 
-	// 记录客户端已经发送过的数据包 Seq 列表
 	sentPackets := []*Packet{}
-	// 记录客户端已经接收到的数据包 Seq 列表
 	receivedPackets := []*Packet{}
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 
-	// 这里启动一个新的 goroutine
-	// 1. 完成超时重传
-	// 2. 完成接收 Ack 操作
 	go func() {
 		defer wg.Done()
 
-		// 超时退出
 		timeout := time.NewTimer(1 * time.Second)
 		defer timeout.Stop()
 
-		// 超时重传定时器
-		// 硬编码为 300 毫秒
 		ticket := time.NewTicker(300 * time.Millisecond)
 		defer ticket.Stop()
 
@@ -207,113 +214,119 @@ func startClient() {
 			case <-timeout.C:
 				return
 			case <-ticket.C:
-				// 发送的数据包已经被接收方全部确认
-				// 无需重传
+				// 错误前置 5: 包全接收完无需重传
 				if len(sentPackets) == len(receivedPackets) {
 					continue
 				}
 
-				// 通过区间差集算法
-				// 同时考虑 选择性确认 的情况
 				lostPackets := []*Packet{}
-				receivedAckList := [][2]int{}
+				receivedAckList := [][2]int32{}
+
 				for _, val := range receivedPackets {
-					ackBlock := strings.Split(val.SAck, "-")
-					start, _ := strconv.ParseInt(ackBlock[0], 10, 64)
-					end, _ := strconv.ParseInt(ackBlock[1], 10, 64)
-					receivedAckList = append(receivedAckList, [2]int{
-						int(start),
-						int(end),
-					})
+					receivedAckList = append(receivedAckList, val.SAck...)
 				}
 
-				// 排序合并后的区间
-				sort.Slice(receivedAckList, func(i, j int) bool {
-					return receivedAckList[i][0] < receivedAckList[j][0] && receivedAckList[i][1] < receivedAckList[j][1]
-				})
-				// 合并重复区间
-				uniqueIndex := 0
-				for i := 1; i < len(receivedAckList); i++ {
-					if receivedAckList[i][0] == receivedAckList[uniqueIndex][1] {
-						receivedAckList[uniqueIndex][1] = receivedAckList[i][1]
-					} else {
-						uniqueIndex++
+				// 无有效 ACK 时，直接重传全部已发送包
+				if len(receivedAckList) == 0 {
+					lostPackets = append(lostPackets, sentPackets...)
+				} else {
+					// 排序并合并接收到的 ACK 块
+					sort.Slice(receivedAckList, func(i, j int) bool {
+						if receivedAckList[i][0] != receivedAckList[j][0] {
+							return receivedAckList[i][0] < receivedAckList[j][0]
+						}
+						return receivedAckList[i][1] < receivedAckList[j][1]
+					})
+
+					uniqueIndex := 0
+					for i := 1; i < len(receivedAckList); i++ {
+						if receivedAckList[i][0] <= receivedAckList[uniqueIndex][1] {
+							if receivedAckList[i][1] > receivedAckList[uniqueIndex][1] {
+								receivedAckList[uniqueIndex][1] = receivedAckList[i][1]
+							}
+						} else {
+							uniqueIndex++
+							receivedAckList[uniqueIndex] = receivedAckList[i]
+						}
+					}
+					receivedAckList = receivedAckList[:uniqueIndex+1]
+
+					// 找出掉包的 Packet
+					for _, pkt := range sentPackets {
+						pktEnd := pkt.Header.Seq + int32(len(pkt.Data))
+						acked := false
+						for _, ackRange := range receivedAckList {
+							if pkt.Header.Seq >= ackRange[0] && pktEnd <= ackRange[1] {
+								acked = true
+								break
+							}
+						}
+						if !acked {
+							lostPackets = append(lostPackets, pkt)
+						}
 					}
 				}
-				receivedAckList = receivedAckList[:uniqueIndex+1]
 
-				// 计算丢失的数据包
-				curRecvIndex := 0
-				for i, val := range sentPackets {
-					if curRecvIndex >= len(receivedPackets) {
-						lostPackets = append(lostPackets, val)
+				// 执行重传发送
+				for _, val := range lostPackets {
+					retransmitPkt := Packet{
+						Header: Header{
+							Seq:        val.Header.Seq,
+							Ack:        1,
+							Flag:       FlagTypeData,
+							Retransmit: true,
+						},
+						Data: []byte("Hello Server"),
+					}
+					conn.Write(retransmitPkt.Encode())
+				}
+
+			default:
+				buffer := make([]byte, 1024)
+				conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+				n, _, err := conn.ReadFromUDP(buffer)
+				// 网络超时/读取错误提前返回
+				if err != nil {
+					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 						continue
 					}
-					if val.Seq > receivedAckList[curRecvIndex][1] {
-						curRecvIndex++
-						lostPackets = append(lostPackets, sentPackets[i-1])
-					}
+					return
 				}
 
-				for _, val := range lostPackets {
-					// 构建 1 个 UDP 数据包
-					packet := Packet{
-						Seq:        val.Seq,
-						Ack:        1,
-						Data:       "Hello Server",
-						Flag:       FlagTypeData,
-						Retransmit: true,
-					}
-
-					data := encode(&packet)
-					conn.Write(data)
-				}
-			default:
-				// 接收 Ack 包
-				buffer := make([]byte, 32)
-
-				conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-				_, _, err := conn.ReadFromUDP(buffer)
+				recvAckPacket, err := Decode(buffer[:n])
+				// ACK 数据包无法正常解码直接跳过
 				if err != nil {
 					continue
 				}
 
-				recvAckPacket := decode(buffer[:])
-				fmt.Printf("server -> client %s\n", serialization(&recvAckPacket))
-
-				// 更新接收到的数据包 Seq
+				fmt.Printf("server -> client %s\n", recvAckPacket.String())
 				receivedPackets = append(receivedPackets, &recvAckPacket)
 			}
 		}
 	}()
 
-	//  客户端 Seq 值从 1 开始
-	curSeq := 1
+	curSeq := int32(1)
 
-	// 连续发送 5 个 UDP 数据包
 	for i := 0; i < 5; i++ {
-		// 构建 1 个 UDP 数据包
 		packet := Packet{
-			Seq:  curSeq,
-			Ack:  1,
-			Data: "Hello Server",
-			Flag: FlagTypeData,
+			Header: Header{
+				Seq:  curSeq,
+				Ack:  1,
+				Flag: FlagTypeData,
+			},
+			Data: []byte("Hello Server"),
 		}
 
-		// 更新发送过的数据包 Seq
 		sentPackets = append(sentPackets, &packet)
 
-		// 第 4 个数据包模拟丢包
+		// 模拟第 4 个包丢包
 		if i != 3 {
-			data := encode(&packet)
-			conn.Write(data)
+			conn.Write(packet.Encode())
 		}
 
-		// 更新下次发送数据包的 Seq 值
-		curSeq += len(packet.Data)
+		curSeq += int32(len(packet.Data))
 	}
 
-	// 等待 Ack 报文接收完成
 	wg.Wait()
 }
 

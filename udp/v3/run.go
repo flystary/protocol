@@ -22,7 +22,7 @@ func startServer() {
 	}
 	defer conn.Close()
 
-	buffer := make([]byte, 32)
+	buffer := make([]byte, 1024)
 	const ackDelay = 200 * time.Millisecond
 
 	var (
@@ -34,45 +34,54 @@ func startServer() {
 
 	go func() {
 		for {
-			if time.Since(lastAckTime) >= ackDelay && len(seqList) > 0 {
-
-				lastAck = seqList[0][1]
-				lastAckChange := false
-
-				mergedSeqList := [][2]int32{
-					seqList[0],
-				}
-				for i := 1; i < len(seqList); i++ {
-					if seqList[i][0] == mergedSeqList[len(mergedSeqList)-1][1] {
-						mergedSeqList[len(mergedSeqList)-1][1] = seqList[i][1]
-
-						if !lastAckChange {
-							lastAck = mergedSeqList[len(mergedSeqList)-1][1]
-						}
-					} else {
-						lastAckChange = true
-						mergedSeqList = append(mergedSeqList, seqList[i])
-					}
-				}
-
-				for _, seq := range mergedSeqList {
-					ackPacket := Packet{
-						Header: Header{
-							Seq:  1,
-							Ack:  lastAck,
-							SAck: append([][2]int32{}, seq),
-							Flag: FlagTypeAck,
-						},
-						Data: nil,
-					}
-					ackData := ackPacket.Encode()
-					conn.WriteToUDP(ackData, clientAddr)
-				}
-				lastAckTime = time.Now()
-				seqList = seqList[:0]
-			}
 			time.Sleep(100 * time.Millisecond)
+
+			if clientAddr == nil || len(seqList) == 0 {
+				continue
+			}
+
+			if time.Since(lastAckTime) < ackDelay {
+				continue
+			}
+
+			lastAck = seqList[0][1]
+			lastAckChange := false
+
+			mergedSeqList := [][2]int32{
+				seqList[0],
+			}
+			for i := 1; i < len(seqList); i++ {
+				if seqList[i][0] == mergedSeqList[len(mergedSeqList)-1][1] {
+					mergedSeqList[len(mergedSeqList)-1][1] = seqList[i][1]
+
+					if !lastAckChange {
+						lastAck = mergedSeqList[len(mergedSeqList)-1][1]
+					}
+				} else {
+					lastAckChange = true
+					mergedSeqList = append(mergedSeqList, seqList[i])
+				}
+			}
+
+			for _, seq := range mergedSeqList {
+				sackList := [][2]int32{seq}
+				ackPacket := Packet{
+					Header: Header{
+						Seq:       1,
+						Ack:       lastAck,
+						SAckCount: uint8(len(sackList)),
+						Flag:      FlagTypeAck,
+					},
+					SAck: sackList,
+					Data: nil,
+				}
+				ackData := ackPacket.Encode()
+				conn.WriteToUDP(ackData, clientAddr)
+			}
+			lastAckTime = time.Now()
+			seqList = seqList[:0]
 		}
+
 	}()
 
 	for {
@@ -83,6 +92,9 @@ func startServer() {
 		}
 
 		recvPacket, err := Decode(buffer[:])
+		if err != nil {
+			continue
+		}
 		fmt.Printf("client -> server %s\n", recvPacket.String())
 
 		// lastAck = recvPacket.Seq + len(recvPacket.Data)
@@ -122,6 +134,10 @@ func startClient() {
 				}
 
 				recvAckPacket, err := Decode(buffer[:])
+				if err != nil {
+					fmt.Println("Client decode error:", err)
+					continue
+				}
 				fmt.Printf("server -> client %s\n", recvAckPacket.String())
 			}
 		}

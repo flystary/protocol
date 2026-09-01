@@ -45,13 +45,13 @@ func (p *Packet) Encode() []byte {
 	totalLen := HeaderSize + (sackLen * 8) + len(p.Data)
 	buf := make([]byte, totalLen)
 
-	// 1. 写入 Header
+	// 写入 Header
 	binary.BigEndian.PutUint32(buf[0:4], uint32(p.Header.Seq))
 	binary.BigEndian.PutUint32(buf[4:8], uint32(p.Header.Ack))
 	buf[8] = byte(p.Header.Flag)
 	buf[9] = uint8(sackLen)
 
-	// 2. 写入 SAck 区间 (每个区间占 8 字节: Left 4B + Right 4B)
+	// 写入 SAck 区间 (每个区间占 8 字节: Left 4B + Right 4B)
 	offset := HeaderSize
 	for i := 0; i < sackLen; i++ {
 		binary.BigEndian.PutUint32(buf[offset:offset+4], uint32(p.SAck[i][0]))
@@ -59,7 +59,7 @@ func (p *Packet) Encode() []byte {
 		offset += 8
 	}
 
-	// 3. 写入最末尾的变长 Data
+	// 写入最末尾的变长 Data
 	copy(buf[offset:], p.Data)
 
 	return buf

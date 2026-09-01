@@ -34,32 +34,40 @@ func startServer() {
 
 	go func() {
 		for {
-			if time.Since(lastAckTime) >= ackDelay {
-				ackPacket := Packet{
-					Header: Header{
-						Seq:  1,
-						Ack:  lastAck,
-						Flag: FlagTypeAck,
-					},
-					Data: nil,
-				}
-				ackData := ackPacket.Encode()
-				if _, err := conn.WriteToUDP(ackData, clientAddr); err != nil {
-					log.Printf("Error sending ACK: %v\n", err)
-				}
-				lastAckTime = time.Now()
-			}
 			time.Sleep(100 * time.Millisecond)
+			// 尚未收到客户端请求或未触发有效 ACK 变更
+			if clientAddr == nil || lastAck == 0 {
+				continue
+			}
+
+			// 延迟时间未到跳过发送
+			if time.Since(lastAckTime) < ackDelay {
+				continue
+			}
+			ackPacket := Packet{
+				Header: Header{
+					Seq:  1,
+					Ack:  lastAck,
+					Flag: FlagTypeAck,
+				},
+				Data: nil,
+			}
+			ackData := ackPacket.Encode()
+			if _, err := conn.WriteToUDP(ackData, clientAddr); err != nil {
+				log.Printf("Error sending ACK: %v\n", err)
+			}
+			lastAckTime = time.Now()
 		}
 	}()
 
 	for {
-		_, clientAddr, err = conn.ReadFromUDP(buffer)
+		n, addr, err := conn.ReadFromUDP(buffer)
 		if err != nil {
 			fmt.Println("Error reading:", err)
 			continue
 		}
-		recvPacket, err := Decode(buffer[:])
+		clientAddr = addr
+		recvPacket, err := Decode(buffer[:n])
 		if err != nil {
 			fmt.Println("Error decodeing:", err)
 			continue
